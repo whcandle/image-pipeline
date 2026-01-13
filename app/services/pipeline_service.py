@@ -1,160 +1,166 @@
-from __future__ import annotations
-
-from pathlib import Path
-from PIL import Image
-
-from app.models.dtos import PipelineRequest, StepInfo
+import os
+from app.models.dtos import PipelineRequest, PipelineResponse, StepInfo
 from app.models.errors import ErrorCode
-from app.services.storage_service import StorageService
+from app.utils.timing import step_timer
+from app.utils.logging import log_event
+from app.utils.image_ops import open_image
+
 from app.services.segment_service import SegmentService
 from app.services.background_service import BackgroundService
 from app.services.compose_service import ComposeService
-from app.utils.timing import timed
-from app.utils.logging import log_kv
+from app.services.storage_service import StorageService
 
 
 class PipelineService:
-    def __init__(self) -> None:
-        self.storage = StorageService()
-        self.segmenter = SegmentService()
-        self.bg = BackgroundService()
-        self.composer = ComposeService()
+    def __init__(
+        self,
+        storage: StorageService,
+        segmenter: SegmentService,
+        bg_service: BackgroundService,
+        composer: ComposeService,
+        segment_sem,
+        bg_sem,
+    ):
+        self.storage = storage
+        self.segmenter = segmenter
+        self.bg_service = bg_service
+        self.composer = composer
+        self.segment_sem = segment_sem
+        self.bg_sem = bg_sem
 
-    def run(self, req: PipelineRequest) -> dict:
-        steps: list[StepInfo] = []
+    def run(self, req: PipelineRequest) -> PipelineResponse:
+        steps = []
 
-        # Validate rawPath exists
-        raw_path = Path(req.rawPath)
-        if not raw_path.exists() or not raw_path.is_file():
-            return self._fail(
-                req=req,
-                steps=steps,
-                code=ErrorCode.INVALID_INPUT,
-                message="rawPath not found",
-                detail={"rawPath": req.rawPath},
+        opts = req.options
+        out = req.output
+
+        segmentation = (opts.segmentation if opts else "AUTO")
+        feather_px = (opts.featherPx if opts else 0)
+        bg_mode = (opts.bgMode if opts else "STATIC")
+
+        preview_width = (out.previewWidth if out else 900)
+
+        # validate raw
+        if not os.path.exists(req.rawPath):
+            return PipelineResponse(
+                ok=False,
+                steps=[],
+                error={
+                    "code": ErrorCode.INVALID_INPUT,
+                    "message": "rawPath not found",
+                    "detail": {"rawPath": req.rawPath},
+                },
             )
 
-        # Load raw image
+        # load raw
         try:
-            raw_img = Image.open(str(raw_path))
-            raw_img.load()
+            raw = open_image(req.rawPath)
         except Exception as e:
-            return self._fail(
-                req=req,
-                steps=steps,
-                code=ErrorCode.DECODE_FAILED,
-                message="failed to decode raw image",
-                detail={"rawPath": req.rawPath, "reason": str(e)},
+            return PipelineResponse(
+                ok=False,
+                steps=[],
+                error={
+                    "code": ErrorCode.DECODE_FAILED,
+                    "message": "failed to decode raw image",
+                    "detail": {"reason": str(e)},
+                },
             )
 
-        # SEGMENT (MVP stub)
-        try:
-            with timed() as ms:
-                person = self.segmenter.segment(raw_img, req.options)
+        # SEGMENT (with semaphore gate for heavy work)
+        with step_timer() as ms:
+            person = raw
+            seg_reason = None
+            if segmentation in ("AUTO", "ON"):
+                acquired = self.segment_sem.acquire(blocking=False)
+                if not acquired:
+                    # 闸门满：直接降级，不抠图（不阻塞）
+                    person = raw
+                    seg_reason = "segment_busy_downgrade"
+                else:
+                    try:
+                        person, seg_reason = self.segmenter.segment_auto(raw, feather_px)
+                    finally:
+                        self.segment_sem.release()
+            # OFF -> keep raw
             steps.append(StepInfo(name="SEGMENT", ms=ms()))
-        except Exception as e:
-            # 降级：用 raw 继续，但记录 step + 日志
-            steps.append(StepInfo(name="SEGMENT", ms=0))
-            person = raw_img.convert("RGBA")
-            log_kv(
-                "segment_failed_fallback",
-                requestId=req.requestId,
-                sessionId=req.sessionId,
-                attemptIndex=req.attemptIndex,
-                templateId=req.template.templateId,
-                reason=str(e),
-            )
-
         # BACKGROUND
-        try:
-            with timed() as ms:
-                bg = self.bg.load_background(req.template, req.options)
-            steps.append(StepInfo(name="BACKGROUND", ms=ms()))
-        except Exception as e:
-            # fallback gray background
-            steps.append(StepInfo(name="BACKGROUND", ms=0))
-            from PIL import Image as PILImage
+        with step_timer() as ms:
+            W = req.template.outputWidth
+            H = req.template.outputHeight
 
-            bg = PILImage.new("RGBA", (req.template.outputWidth, req.template.outputHeight), (200, 200, 200, 255))
-            log_kv(
-                "background_failed_fallback",
-                requestId=req.requestId,
-                sessionId=req.sessionId,
-                attemptIndex=req.attemptIndex,
-                templateId=req.template.templateId,
-                reason=str(e),
-            )
+            bg = None
+            bg_reason = None
+
+            if bg_mode == "GENERATE":
+                acquired = self.bg_sem.acquire(blocking=False)
+                if not acquired:
+                    bg = self.bg_service.load_static_bg(req.template.backgroundPath, W, H)
+                    bg_reason = "bg_busy_fallback_static"
+                else:
+                    try:
+                        bg, bg_reason = self.bg_service.generate_bg_stub(
+                            opts.bgPrompt if opts else None, W, H
+                        )
+                        if bg_reason:
+                            # fallback STATIC
+                            bg = self.bg_service.load_static_bg(req.template.backgroundPath, W, H)
+                    finally:
+                        self.bg_sem.release()
+            else:
+                bg = self.bg_service.load_static_bg(req.template.backgroundPath, W, H)
+
+            steps.append(StepInfo(name="BACKGROUND", ms=ms()))
 
         # COMPOSE
-        try:
-            with timed() as ms:
-                final_rgba = self.composer.compose(bg, person, req.template)
+        with step_timer() as ms:
+            try:
+                final_rgba = self.composer.compose(
+                    bg=bg,
+                    person_rgba=person,
+                    overlay_path=req.template.overlayPath,
+                    safe_area=req.template.safeArea.model_dump(),
+                    crop_mode=req.template.cropMode,
+                )
+            except Exception as e:
+                return PipelineResponse(
+                    ok=False,
+                    steps=[*steps, StepInfo(name="COMPOSE", ms=ms())],
+                    error={
+                        "code": ErrorCode.COMPOSE_FAILED,
+                        "message": "compose failed",
+                        "detail": {"reason": str(e)},
+                    },
+                )
             steps.append(StepInfo(name="COMPOSE", ms=ms()))
-        except Exception as e:
-            return self._fail(
-                req=req,
-                steps=steps + [StepInfo(name="COMPOSE", ms=0)],
-                code=ErrorCode.COMPOSE_FAILED,
-                message="compose failed",
-                detail={"reason": str(e)},
-            )
 
         # STORE
         try:
-            stored = self.storage.save_outputs(
+            preview_url, final_url = self.storage.save_final_and_preview(
                 session_id=req.sessionId,
                 attempt_index=req.attemptIndex,
                 final_rgba=final_rgba,
-                preview_width=req.output.previewWidth,
+                preview_width=preview_width,
             )
         except Exception as e:
-            return self._fail(
-                req=req,
+            return PipelineResponse(
+                ok=False,
                 steps=steps,
-                code=ErrorCode.STORE_FAILED,
-                message="store failed",
-                detail={"reason": str(e)},
+                error={
+                    "code": ErrorCode.STORE_FAILED,
+                    "message": "store failed",
+                    "detail": {"reason": str(e)},
+                },
             )
 
-        # log
-        log_kv(
-            "pipeline_ok",
+        log_event(
+            "pipeline_process",
             requestId=req.requestId,
             sessionId=req.sessionId,
             attemptIndex=req.attemptIndex,
             templateId=req.template.templateId,
             ok=True,
             steps=[s.model_dump() for s in steps],
-            previewUrl=stored.preview_url,
-            finalUrl=stored.final_url,
+            segReason=seg_reason,
         )
 
-        return {
-            "ok": True,
-            "previewUrl": stored.preview_url,
-            "finalUrl": stored.final_url,
-            "steps": [s.model_dump() for s in steps],
-        }
-
-    def _fail(self, req: PipelineRequest, steps: list[StepInfo], code: ErrorCode, message: str, detail: dict) -> dict:
-        log_kv(
-            "pipeline_failed",
-            requestId=req.requestId,
-            sessionId=req.sessionId,
-            attemptIndex=req.attemptIndex,
-            templateId=req.template.templateId,
-            ok=False,
-            errorCode=str(code),
-            message=message,
-            detail=detail,
-            steps=[s.model_dump() for s in steps],
-        )
-        return {
-            "ok": False,
-            "steps": [s.model_dump() for s in steps],
-            "error": {
-                "code": code,
-                "message": message,
-                "detail": detail,
-            },
-        }
+        return PipelineResponse(ok=True, previewUrl=preview_url, finalUrl=final_url, steps=steps)

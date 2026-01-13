@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from enum import Enum
 from pydantic import BaseModel
 from typing import Any, Dict, Optional
@@ -18,10 +16,4 @@ class ErrorCode(str, Enum):
 class ErrorBody(BaseModel):
     code: ErrorCode
     message: str
-    detail: Dict[str, Any] = {}
-
-
-class FailResponse(BaseModel):
-    ok: bool = False
-    steps: list[dict] = []
-    error: ErrorBody
+    detail: Optional[Dict[str, Any]] = None

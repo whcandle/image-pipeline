@@ -1,62 +1,45 @@
-from __future__ import annotations
-
-from PIL import Image
-
-
-def ensure_rgba(img: Image.Image) -> Image.Image:
-    if img.mode != "RGBA":
-        return img.convert("RGBA")
-    return img
+from PIL import Image, ImageFilter
+from typing import Tuple
 
 
-def ensure_rgb(img: Image.Image) -> Image.Image:
-    if img.mode != "RGB":
-        return img.convert("RGB")
-    return img
+def open_image(path: str) -> Image.Image:
+    img = Image.open(path)
+    # 统一转 RGBA，便于 alpha 合成
+    return img.convert("RGBA")
 
 
-def fit_or_fill(
-    src: Image.Image,
-    target_w: int,
-    target_h: int,
-    mode: str,
-) -> Image.Image:
-    """
-    mode:
-      - FILL: cover + center crop
-      - FIT:  contain + letterbox（透明背景）
-    """
-    src = ensure_rgba(src)
+def make_solid_bg(size: Tuple[int, int], color=(180, 180, 180, 255)) -> Image.Image:
+    return Image.new("RGBA", size, color)
+
+
+def fit_or_fill(src: Image.Image, target_w: int, target_h: int, mode: str) -> Image.Image:
+    """mode: FIT(contain) / FILL(cover)"""
     sw, sh = src.size
-
     if sw <= 0 or sh <= 0:
-        raise ValueError("invalid source image size")
+        raise ValueError("invalid src size")
 
-    if mode == "FILL":
-        scale = max(target_w / sw, target_h / sh)
-        nw, nh = int(round(sw * scale)), int(round(sh * scale))
-        resized = src.resize((nw, nh), Image.Resampling.LANCZOS)
-        # center crop
-        left = (nw - target_w) // 2
-        top = (nh - target_h) // 2
-        return resized.crop((left, top, left + target_w, top + target_h))
+    scale_fit = min(target_w / sw, target_h / sh)
+    scale_fill = max(target_w / sw, target_h / sh)
+    scale = scale_fill if mode == "FILL" else scale_fit
 
-    # FIT
-    scale = min(target_w / sw, target_h / sh)
-    nw, nh = int(round(sw * scale)), int(round(sh * scale))
-    resized = src.resize((nw, nh), Image.Resampling.LANCZOS)
+    nw, nh = int(sw * scale), int(sh * scale)
+    resized = src.resize((nw, nh), Image.LANCZOS)
+
+    # canvas 目标尺寸
     canvas = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
-    left = (target_w - nw) // 2
-    top = (target_h - nh) // 2
-    canvas.alpha_composite(resized, (left, top))
+    x = (target_w - nw) // 2
+    y = (target_h - nh) // 2
+    canvas.alpha_composite(resized, (x, y))
+    if mode == "FILL":
+        # FILL: 中心裁剪到 target
+        return canvas.crop((0, 0, target_w, target_h))
     return canvas
 
 
-def alpha_over(base: Image.Image, overlay: Image.Image) -> Image.Image:
-    base = ensure_rgba(base)
-    overlay = ensure_rgba(overlay)
-    if overlay.size != base.size:
-        overlay = overlay.resize(base.size, Image.Resampling.LANCZOS)
-    out = base.copy()
-    out.alpha_composite(overlay, (0, 0))
-    return out
+def feather_alpha(img_rgba: Image.Image, feather_px: int) -> Image.Image:
+    """对 alpha 通道做轻微羽化"""
+    if feather_px <= 0:
+        return img_rgba
+    r, g, b, a = img_rgba.split()
+    a2 = a.filter(ImageFilter.GaussianBlur(radius=feather_px / 2.0))
+    return Image.merge("RGBA", (r, g, b, a2))

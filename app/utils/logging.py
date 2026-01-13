@@ -1,16 +1,11 @@
-from __future__ import annotations
-
 import json
-import sys
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timezone
 
 
-def log_kv(event: str, **kwargs: Any) -> None:
+def log_event(event: str, **fields):
     payload = {
-        "ts": datetime.utcnow().isoformat() + "Z",
+        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "event": event,
-        **kwargs,
+        **fields,
     }
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    print(json.dumps(payload, ensure_ascii=False))

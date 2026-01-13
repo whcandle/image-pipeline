@@ -1,40 +1,36 @@
-from __future__ import annotations
-
-from pathlib import Path
+import os
 from PIL import Image
+from typing import Optional
 
-from app.models.dtos import TemplateSpec
-from app.utils.image_ops import fit_or_fill, alpha_over, ensure_rgba
+from app.utils.image_ops import fit_or_fill, open_image
 
 
 class ComposeService:
     def compose(
         self,
-        background: Image.Image,
-        person_or_raw: Image.Image,
-        template: TemplateSpec,
+        bg: Image.Image,
+        person_rgba: Image.Image,
+        overlay_path: Optional[str],
+        safe_area: dict,
+        crop_mode: str,
     ) -> Image.Image:
-        bg = ensure_rgba(background)
-        w, h = template.outputWidth, template.outputHeight
-        if bg.size != (w, h):
-            bg = bg.resize((w, h), Image.Resampling.LANCZOS)
+        W, H = bg.size
+        canvas = bg.convert("RGBA")
 
-        sa = template.safeArea
-        sw = int(round(w * sa.w))
-        sh = int(round(h * sa.h))
-        sx = int(round(w * sa.x))
-        sy = int(round(h * sa.y))
+        # safe area in pixels
+        sx = int(W * safe_area["x"])
+        sy = int(H * safe_area["y"])
+        sw = int(W * safe_area["w"])
+        sh = int(H * safe_area["h"])
 
-        placed = fit_or_fill(person_or_raw, sw, sh, template.cropMode)
-        out = bg.copy()
-        out.alpha_composite(ensure_rgba(placed), (sx, sy))
+        # resize person into safe area (FIT/FILL)
+        placed = fit_or_fill(person_rgba, sw, sh, crop_mode)
+
+        canvas.alpha_composite(placed, (sx, sy))
 
         # overlay optional
-        if template.overlayPath:
-            p = Path(template.overlayPath)
-            if p.exists() and p.is_file():
-                overlay = Image.open(str(p))
-                overlay = ensure_rgba(overlay)
-                out = alpha_over(out, overlay)
+        if overlay_path and os.path.exists(overlay_path):
+            ov = open_image(overlay_path).resize((W, H), Image.LANCZOS)
+            canvas.alpha_composite(ov, (0, 0))
 
-        return out
+        return canvas

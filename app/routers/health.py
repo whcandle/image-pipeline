@@ -1,19 +1,10 @@
-from __future__ import annotations
-
+from fastapi import APIRouter
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from app.services.segment_service import SegmentService
 
-router = APIRouter()
-
-
-def _rembg_available() -> bool:
-    # MVP: 先不依赖 rembg；后续你接 rembg 时改这里
-    try:
-        import rembg  # noqa: F401
-        return True
-    except Exception:
-        return False
+router = APIRouter(prefix="/pipeline/v1", tags=["health"])
+_segmenter = SegmentService()
 
 
 @router.get("/health")
@@ -21,5 +12,5 @@ def health():
     return {
         "ok": True,
         "time": datetime.now(timezone.utc).isoformat(),
-        "rembg": _rembg_available(),
+        "rembg": _segmenter.rembg_available(),
     }

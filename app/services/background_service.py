@@ -1,27 +1,21 @@
-from __future__ import annotations
-
-from pathlib import Path
+import os
 from PIL import Image
+from typing import Optional, Tuple
 
-from app.models.dtos import TemplateSpec, AiOptions
-from app.utils.image_ops import ensure_rgba
+from app.utils.image_ops import make_solid_bg, open_image
 
 
 class BackgroundService:
-    def load_background(self, template: TemplateSpec, options: AiOptions) -> Image.Image:
-        # MVP: 只做 STATIC；GENERATE 先 stub，fallback STATIC
-        w, h = template.outputWidth, template.outputHeight
+    def load_static_bg(self, bg_path: Optional[str], w: int, h: int) -> Image.Image:
+        if bg_path and os.path.exists(bg_path):
+            bg = open_image(bg_path)
+            return bg.resize((w, h), Image.LANCZOS)
+        # 缺失就用灰底
+        return make_solid_bg((w, h))
 
-        bg_path = template.backgroundPath
-        if bg_path:
-            p = Path(bg_path)
-            if p.exists() and p.is_file():
-                try:
-                    img = Image.open(str(p))
-                    img = ensure_rgba(img).resize((w, h), Image.Resampling.LANCZOS)
-                    return img
-                except Exception:
-                    pass
-
-        # fallback: gray background
-        return Image.new("RGBA", (w, h), (200, 200, 200, 255))
+    def generate_bg_stub(self, prompt: Optional[str], w: int, h: int) -> Tuple[Image.Image, Optional[str]]:
+        """
+        这里就是未来接"百炼/通义/OpenAI"的位置。
+        MVP 先 stub：直接用灰底，并返回 reason。
+        """
+        return make_solid_bg((w, h)), "generate_not_implemented"

@@ -1,55 +1,62 @@
-from __future__ import annotations
-
-from pathlib import Path
-
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from threading import Semaphore
 
-from app.config import load_settings
+from app.config import settings
+from app.utils.logging import log_event
+
 from app.routers.health import router as health_router
 from app.routers.process import router as process_router
-from app.utils.logging import log_kv
+
+from app.services.storage_service import StorageService
+from app.services.segment_service import SegmentService
+from app.services.background_service import BackgroundService
+from app.services.compose_service import ComposeService
+from app.services.pipeline_service import PipelineService
+
+app = FastAPI(title="Image Pipeline", version="0.1")
+
+# ----------------------------
+# services singletons
+# ----------------------------
+storage = StorageService(settings.PIPELINE_DATA_DIR, settings.PUBLIC_BASE_URL)
+segmenter = SegmentService()
+bg_service = BackgroundService()
+composer = ComposeService()
+
+segment_sem = Semaphore(settings.MAX_SEGMENT_CONCURRENCY)
+bg_sem = Semaphore(settings.MAX_BG_CONCURRENCY)
+
+pipeline_service = PipelineService(
+    storage=storage,
+    segmenter=segmenter,
+    bg_service=bg_service,
+    composer=composer,
+    segment_sem=segment_sem,
+    bg_sem=bg_sem,
+)
+
+# ✅ 关键：注入到 app.state，router 从 request.app.state 取
+app.state.pipeline_service = pipeline_service
+
+# ----------------------------
+# routes
+# ----------------------------
+app.include_router(health_router)
+app.include_router(process_router)
+
+# ----------------------------
+# static files
+# ----------------------------
+app.mount("/files", StaticFiles(directory=settings.PIPELINE_DATA_DIR), name="files")
 
 
-def create_app() -> FastAPI:
-    settings = load_settings()
-
-    app = FastAPI(title="Image Pipeline", version="0.1.0")
-
-    # MVP: 允许跨域（设备端/本地调试方便）
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    # Ensure dirs
-    (settings.data_dir / "preview").mkdir(parents=True, exist_ok=True)
-    (settings.data_dir / "final").mkdir(parents=True, exist_ok=True)
-    (settings.data_dir / "_debug").mkdir(parents=True, exist_ok=True)
-
-    # /files -> serve local images
-    app.mount(
-        "/files",
-        StaticFiles(directory=str(settings.data_dir), html=False),
-        name="files",
-    )
-
-    app.include_router(health_router, prefix="/pipeline/v1", tags=["health"])
-    app.include_router(process_router, prefix="/pipeline/v1", tags=["process"])
-
-    log_kv(
+@app.on_event("startup")
+def on_startup():
+    log_event(
         "pipeline_started",
-        host=settings.host,
-        port=settings.port,
-        data_dir=str(Path(settings.data_dir)),
-        public_base_url=settings.public_base_url,
+        host=settings.PIPELINE_HOST,
+        port=settings.PIPELINE_PORT,
+        data_dir=settings.PIPELINE_DATA_DIR,
+        public_base_url=settings.PUBLIC_BASE_URL,
     )
-
-    return app
-
-
-app = create_app()
