@@ -1,14 +1,22 @@
-from __future__ import annotations
-
 import pytest
-from app.models.dtos import SafeArea
 
-
-def test_safe_area_ok():
-    sa = SafeArea(x=0.1, y=0.1, w=0.8, h=0.8)
-    assert sa.x + sa.w <= 1.0
-
-
-def test_safe_area_out_of_bounds():
-    with pytest.raises(Exception):
-        SafeArea(x=0.3, y=0.1, w=0.8, h=0.8)
+def test_safe_area_invalid(client):
+    payload = {
+        "requestId": "req_t",
+        "sessionId": "sess_t",
+        "attemptIndex": 0,
+        "rawPath": "D:/no_such.jpg",
+        "template": {
+            "templateId": "tpl",
+            "outputWidth": 100,
+            "outputHeight": 100,
+            "backgroundPath": None,
+            "overlayPath": None,
+            "safeArea": {"x": 0.9, "y": 0.9, "w": 0.5, "h": 0.5},
+            "cropMode": "FILL",
+        },
+        "options": {"bgMode": "STATIC", "segmentation": "OFF", "featherPx": 0, "strength": 0.6},
+        "output": {"previewWidth": 100, "finalWidth": 100},
+    }
+    r = client.post("/pipeline/v1/process", json=payload)
+    assert r.status_code == 422
