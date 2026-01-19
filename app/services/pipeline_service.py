@@ -111,6 +111,9 @@ class PipelineService:
 
             steps.append(StepInfo(name="BACKGROUND", ms=ms()))
 
+            print("bg_path=", req.template.backgroundPath, "exists=", os.path.exists(req.template.backgroundPath or ""))
+            print("ov_path=", req.template.overlayPath, "exists=", os.path.exists(req.template.overlayPath or ""))
+
         # COMPOSE
         with step_timer() as ms:
             try:
