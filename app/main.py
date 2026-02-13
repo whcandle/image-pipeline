@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from threading import Semaphore
+from pathlib import Path
 
 from app.config import settings
 from app.utils.logging import log_event
@@ -43,11 +44,34 @@ app.state.pipeline_service = pipeline_service
 # routes
 # ----------------------------
 app.include_router(health_router)
+
+# process_router 包含 v1 和 v2 两个版本的路由：
+# - /pipeline/v1/process (原有接口，保持兼容)
+# - /pipeline/v2/process (新增模板驱动接口)
+# 路由定义在 app/routers/process.py 中
 app.include_router(process_router)
 
 # ----------------------------
 # static files
 # ----------------------------
+booth_root = Path(settings.BOOTH_DATA_DIR)
+booth_root.mkdir(parents=True, exist_ok=True)
+(booth_root / "preview").mkdir(parents=True, exist_ok=True)
+(booth_root / "final").mkdir(parents=True, exist_ok=True)
+
+# v2 本地模板输出：preview/final
+app.mount(
+    "/files/preview",
+    StaticFiles(directory=str(booth_root / "preview")),
+    name="files_preview",
+)
+app.mount(
+    "/files/final",
+    StaticFiles(directory=str(booth_root / "final")),
+    name="files_final",
+)
+
+# 旧版接口仍然通过 /files 挂载 PIPELINE_DATA_DIR，保持兼容
 app.mount("/files", StaticFiles(directory=settings.PIPELINE_DATA_DIR), name="files")
 
 

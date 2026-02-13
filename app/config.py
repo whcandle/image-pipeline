@@ -16,9 +16,21 @@ class Settings(BaseSettings):
         validation_alias="PIPELINE_DATA_DIR",
     )
 
+    # Booth 本地数据根目录（用于 v2 StorageManager，preview/final 输出）
+    BOOTH_DATA_DIR: str = Field(
+        default=r"D:\AICreama\booth\data",
+        validation_alias="BOOTH_DATA_DIR",
+    )
+
     PUBLIC_BASE_URL: str = "http://localhost:9002"
     MAX_SEGMENT_CONCURRENCY: int = 1
     MAX_BG_CONCURRENCY: int = 1
+    
+    # 模板缓存目录（默认：app/data/_templates）
+    TEMPLATE_CACHE_DIR: str = Field(
+        default="app/data/_templates",
+        validation_alias="TEMPLATE_CACHE_DIR",
+    )
 
 
 settings = Settings()

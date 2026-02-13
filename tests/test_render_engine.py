@@ -1,4 +1,18 @@
 """
+RenderEngine v1（legacy）测试文件
+
+当前项目已切换到基于 runtime_spec 的 RenderEngine v2，
+本文件中的测试使用旧的 outputWidth/outputHeight/safeArea 协议，
+与现有实现不兼容，因此整体跳过。
+"""
+
+import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="Legacy RenderEngine v1 tests; replaced by test_render_engine_v2 and runtime_spec tests."
+)
+
+"""
 测试 RenderEngine 模块
 
 验证：

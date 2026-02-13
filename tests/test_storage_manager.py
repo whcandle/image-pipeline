@@ -209,3 +209,62 @@ def test_storage_manager_multiple_stores(temp_storage_dir, sample_image):
         for date_dir in date_dirs:
             all_files.extend(list(date_dir.glob("*.jpg")))
         assert len(all_files) >= 3
+
+
+def test_store_final_creates_file_and_url(temp_storage_dir, sample_image):
+    """v2：store_final 应该在指定 BOOTH_DATA_DIR 下生成文件并返回 path/url"""
+    manager = StorageManager(
+        storage_base_path=temp_storage_dir,
+        public_base_url="http://localhost:9002",
+        subdirectory="",  # 直接使用 temp_storage_dir 作为根
+    )
+
+    job_id = "job_test_001"
+    info = manager.store_final(job_id, sample_image, fmt="png")
+
+    path = Path(info["path"])
+    url = info["url"]
+
+    assert path.exists()
+    # 目录结构：{root}/final/{jobId}/final.png
+    assert path.parent.name == job_id
+    assert path.parent.parent.name == "final"
+
+    assert url == "http://localhost:9002/files/final/job_test_001/final.png"
+    
+    # 验证文件可以被 Image.open() 正常打开
+    try:
+        opened_img = Image.open(path)
+        assert opened_img is not None
+        opened_img.close()  # 关闭文件句柄
+    except Exception as e:
+        pytest.fail(f"无法打开保存的文件: {path}, 错误: {e}")
+
+
+def test_store_preview_creates_file_and_url(temp_storage_dir, sample_image):
+    """v2：store_preview 应该在指定 BOOTH_DATA_DIR 下生成文件并返回 path/url"""
+    manager = StorageManager(
+        storage_base_path=temp_storage_dir,
+        public_base_url="http://localhost:9002",
+        subdirectory="",  # 直接使用 temp_storage_dir 作为根
+    )
+
+    job_id = "job_test_002"
+    info = manager.store_preview(job_id, sample_image, fmt="png")
+
+    path = Path(info["path"])
+    url = info["url"]
+
+    assert path.exists()
+    assert path.parent.name == job_id
+    assert path.parent.parent.name == "preview"
+
+    assert url == "http://localhost:9002/files/preview/job_test_002/preview.png"
+    
+    # 验证文件可以被 Image.open() 正常打开
+    try:
+        opened_img = Image.open(path)
+        assert opened_img is not None
+        opened_img.close()  # 关闭文件句柄
+    except Exception as e:
+        pytest.fail(f"无法打开保存的文件: {path}, 错误: {e}")

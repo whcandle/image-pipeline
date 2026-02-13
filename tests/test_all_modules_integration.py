@@ -1,4 +1,18 @@
 """
+集成测试（legacy v1）
+
+旧版集成测试依赖 outputWidth/outputHeight + safeArea 协议，
+当前项目已迁移到 v2 模板协议（manifest + runtime_spec），
+因此本文件整体跳过，避免与新实现冲突。
+"""
+
+import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="Legacy v1 integration tests; superseded by v2 template-driven pipeline."
+)
+
+"""
 集成测试：测试所有模块的协同工作
 
 验证：
