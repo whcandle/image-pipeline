@@ -322,7 +322,7 @@ def test_process_v2_render_failed(client, temp_template_dir, temp_raw_image, mon
     - error.retryable=false
     """
     from app.services.template_resolver import TemplateResolver
-    from app.services.render_engine import RenderEngine
+    from app.services.render_engine import RenderEngine, RenderError
     
     # Mock TemplateResolver
     def mock_resolve(self):
@@ -331,7 +331,7 @@ def test_process_v2_render_failed(client, temp_template_dir, temp_raw_image, mon
     monkeypatch.setattr(TemplateResolver, "resolve", mock_resolve)
     
     # Mock RenderEngine 抛出异常
-    def mock_render(self, raw_image):
+    def mock_render(*args, **kwargs):
         raise RenderError("Rendering failed: test error")
     
     monkeypatch.setattr(RenderEngine, "render", mock_render)

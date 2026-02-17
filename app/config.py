@@ -31,6 +31,16 @@ class Settings(BaseSettings):
         default="app/data/_templates",
         validation_alias="TEMPLATE_CACHE_DIR",
     )
+    
+    # Platform API 配置
+    PLATFORM_BASE_URL: str = Field(
+        default="http://localhost:8089",
+        validation_alias="PLATFORM_BASE_URL",
+    )
+    PLATFORM_TIMEOUT_MS: int = Field(
+        default=5000,
+        validation_alias="PLATFORM_TIMEOUT_MS",
+    )
 
 
 settings = Settings()

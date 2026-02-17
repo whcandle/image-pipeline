@@ -29,6 +29,8 @@ from app.services.manifest_loader import (
 )
 from app.services.render_engine import RenderEngine, RenderError
 from app.services.storage_manager import StorageManager, StorageError
+from app.services.rules_loader import RulesLoader
+from app.clients.platform_client import PlatformClient, PlatformResolveError
 from app.config import settings
 from PIL import Image
 
@@ -231,6 +233,140 @@ async def process_v2(req: PipelineV2Request, request: Request):
             
             manifest_load_ms = int((time.time() - manifest_load_start) * 1000)
             timing_steps.append(StepInfo(name="MANIFEST_LOAD", ms=manifest_load_ms))
+            
+            # 加载 rules 配置
+            rules_loader = RulesLoader(template_dir)
+            rules_result = rules_loader.load(manifest)
+            
+            # 添加 rules 加载状态到 notes
+            notes.append(NoteItem(
+                code="RULES_LOADED",
+                message=(
+                    "Rules file loaded successfully"
+                    if rules_result.rules_loaded
+                    else "Rules file not loaded, using defaults"
+                ),
+                details={"value": rules_result.rules_loaded},
+            ))
+            notes.append(NoteItem(
+                code="RULES_DEFAULT_USED",
+                message=(
+                    "Default rules used"
+                    if rules_result.rules_default_used
+                    else "Custom rules used"
+                ),
+                details={"value": rules_result.rules_default_used},
+            ))
+            
+            # 判定是否需要 segmentation（needs_segmentation）
+            # needs_cutout = any(photo.source == "cutout")
+            photos = runtime_spec.get("photos", [])
+            needs_cutout = any(photo.get("source") == "cutout" for photo in photos)
+            
+            # seg_enabled = rules.segmentation.enabled == true（默认 false）
+            # 支持两种格式：
+            # 1. 扁平化：{"segmentation.enabled": true}
+            # 2. 嵌套：{"segmentation": {"enabled": true}}
+            if "segmentation.enabled" in rules_result.rules:
+                seg_enabled = rules_result.rules.get("segmentation.enabled", False) is True
+            elif "segmentation" in rules_result.rules and isinstance(rules_result.rules["segmentation"], dict):
+                seg_enabled = rules_result.rules["segmentation"].get("enabled", False) is True
+            else:
+                seg_enabled = False
+            
+            # needs_segmentation = needs_cutout && seg_enabled
+            needs_segmentation = needs_cutout and seg_enabled
+            
+            # 将判定结果写入 notes
+            notes.append(NoteItem(
+                code="NEEDS_CUTOUT",
+                message=f"Template requires cutout: {needs_cutout}",
+                details={"value": needs_cutout},
+            ))
+            notes.append(NoteItem(
+                code="SEG_ENABLED",
+                message=f"Segmentation enabled in rules: {seg_enabled}",
+                details={"value": seg_enabled},
+            ))
+            notes.append(NoteItem(
+                code="NEEDS_SEGMENTATION",
+                message=f"Segmentation required: {needs_segmentation}",
+                details={"value": needs_segmentation},
+            ))
+            
+            # 如果 needs_segmentation=true，调用 platform resolve 获取 execution plan
+            if needs_segmentation:
+                try:
+                    # 从 rules 中提取参数
+                    # 支持两种格式：扁平化 {"segmentation.prefer": [...]} 或嵌套 {"segmentation": {"prefer": [...]}}
+                    if "segmentation.prefer" in rules_result.rules:
+                        prefer = rules_result.rules.get("segmentation.prefer", [])
+                    elif "segmentation" in rules_result.rules and isinstance(rules_result.rules["segmentation"], dict):
+                        prefer = rules_result.rules["segmentation"].get("prefer", ["removebg", "rembg"])
+                    else:
+                        prefer = ["removebg", "rembg"]  # 默认值
+                    
+                    if "segmentation.timeoutMs" in rules_result.rules:
+                        seg_timeout_ms = rules_result.rules.get("segmentation.timeoutMs", 6000)
+                    elif "segmentation" in rules_result.rules and isinstance(rules_result.rules["segmentation"], dict):
+                        seg_timeout_ms = rules_result.rules["segmentation"].get("timeoutMs", 6000)
+                    else:
+                        seg_timeout_ms = 6000  # 默认值
+                    
+                    # hintParams：至少传 output="rgba"
+                    hint_params = {"output": "rgba"}
+                    if "segmentation" in rules_result.rules and isinstance(rules_result.rules["segmentation"], dict):
+                        seg_config = rules_result.rules["segmentation"]
+                        if "output" in seg_config:
+                            hint_params["output"] = seg_config["output"]
+                        if "quality" in seg_config:
+                            hint_params["quality"] = seg_config["quality"]
+                    
+                    # 调用 platform resolve
+                    platform_client = PlatformClient()
+                    execution_plan = platform_client.resolve(
+                        template_code=req.templateCode,
+                        version_semver=req.versionSemver,
+                        prefer=prefer,
+                        timeout_ms=seg_timeout_ms,
+                        hint_params=hint_params,
+                    )
+                    
+                    # 提取 providerCode 和 endpoint（PlatformClient 已经解析好格式）
+                    provider_code = execution_plan.get("providerCode", "unknown")
+                    endpoint = execution_plan.get("endpoint", "")
+                    
+                    # 写入 notes
+                    notes.append(NoteItem(
+                        code="SEG_RESOLVED_PROVIDER",
+                        message=f"Platform resolved segmentation provider: {provider_code}",
+                        details={
+                            "providerCode": provider_code,
+                            "endpoint": endpoint,
+                        },
+                    ))
+                except PlatformResolveError as e:
+                    # resolve 失败：记录错误，但不崩溃
+                    print(f"[process_v2] ⚠️ Platform resolve failed: {e}")
+                    notes.append(NoteItem(
+                        code="SEG_RESOLVE_FAILED",
+                        message="Platform resolve failed, will use fallback",
+                        details={
+                            "error": str(e),
+                            "value": True,
+                        },
+                    ))
+                except Exception as e:
+                    # 其他异常：记录错误，但不崩溃
+                    print(f"[process_v2] ⚠️ Unexpected error during platform resolve: {e}")
+                    notes.append(NoteItem(
+                        code="SEG_RESOLVE_FAILED",
+                        message="Platform resolve failed with unexpected error",
+                        details={
+                            "error": str(e),
+                            "value": True,
+                        },
+                    ))
             
             # 从 runtime_spec 提取引擎信息（如果有）
             engine_info = runtime_spec.get("engine") or runtime_spec.get("renderEngine")
