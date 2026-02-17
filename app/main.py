@@ -8,6 +8,7 @@ from app.utils.logging import log_event
 
 from app.routers.health import router as health_router
 from app.routers.process import router as process_router
+from app.routers.test_segmentation import router as test_segmentation_router
 
 from app.services.storage_service import StorageService
 from app.services.segment_service import SegmentService
@@ -50,6 +51,12 @@ app.include_router(health_router)
 # - /pipeline/v2/process (新增模板驱动接口)
 # 路由定义在 app/routers/process.py 中
 app.include_router(process_router)
+
+# 测试路由（仅在开发环境使用）
+# 注意：生产环境应该禁用或移除此路由
+import os
+if os.getenv("ENABLE_TEST_ROUTES", "").lower() in ("1", "true", "yes"):
+    app.include_router(test_segmentation_router)
 
 # ----------------------------
 # static files

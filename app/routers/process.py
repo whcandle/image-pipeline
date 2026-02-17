@@ -31,6 +31,7 @@ from app.services.render_engine import RenderEngine, RenderError
 from app.services.storage_manager import StorageManager, StorageError
 from app.services.rules_loader import RulesLoader
 from app.clients.platform_client import PlatformClient, PlatformResolveError
+from app.services.segmentation.segmentation_service import SegmentationService
 from app.config import settings
 from PIL import Image
 
@@ -472,12 +473,53 @@ async def process_v2(req: PipelineV2Request, request: Request):
                 )]
             ).model_dump()
         
-        # 4. 渲染图像
+        # 4. 加载原始图像
+        raw_image = Image.open(raw_path)
+        
+        # 5. 执行抠图（如果需要）
+        cutout_image = None
+        artifacts = None
+        if needs_segmentation:
+            seg_start = time.time()
+            try:
+                segmentation_service = SegmentationService()
+                cutout_image, seg_notes_list = segmentation_service.segment(
+                    raw_image=raw_image,
+                    template_code=req.templateCode,
+                    version_semver=req.versionSemver,
+                    rules=rules_result.rules,
+                )
+                
+                # 将 seg_notes 转换为 NoteItem 并添加到 notes
+                for seg_note in seg_notes_list:
+                    notes.append(NoteItem(
+                        code=seg_note.get("code", "SEG_UNKNOWN"),
+                        message=seg_note.get("message", ""),
+                        details=seg_note.get("details", {})
+                    ))
+                
+                # 如果成功得到 cutout，准备 artifacts
+                if cutout_image is not None:
+                    artifacts = {"cutout": cutout_image}
+                
+                seg_ms = int((time.time() - seg_start) * 1000)
+                timing_steps.append(StepInfo(name="SEGMENTATION", ms=seg_ms))
+            except Exception as e:
+                # 抠图失败不应该导致整个请求失败（fallback 应该已经处理）
+                seg_ms = int((time.time() - seg_start) * 1000)
+                timing_steps.append(StepInfo(name="SEGMENTATION", ms=seg_ms))
+                print(f"[process_v2] ⚠️ Segmentation failed (should have fallback): {e}")
+                notes.append(NoteItem(
+                    code="SEG_ERROR",
+                    message=f"Segmentation error: {str(e)[:200]}",
+                    details={"error": str(e)[:200]}
+                ))
+        
+        # 6. 渲染图像
         render_start = time.time()
         try:
-            raw_image = Image.open(raw_path)
             render_engine = RenderEngine(runtime_spec)
-            final_image = render_engine.render(raw_image)
+            final_image = render_engine.render(raw_image, artifacts=artifacts)
             render_ms = int((time.time() - render_start) * 1000)
             timing_steps.append(StepInfo(name="RENDER", ms=render_ms))
         except RenderError as e:

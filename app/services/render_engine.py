@@ -59,7 +59,7 @@ class RenderEngine:
         """
         self.runtime_spec = runtime_spec
     
-    def render(self, raw_image: Image.Image) -> Image.Image:
+    def render(self, raw_image: Image.Image, artifacts: Optional[Dict[str, Image.Image]] = None) -> Image.Image:
         """
         根据 runtime_spec 渲染图像。
         
@@ -71,6 +71,8 @@ class RenderEngine:
         
         Args:
             raw_image: The input raw image (PIL Image)
+            artifacts: 可选的艺术品字典，包含：
+                - "cutout": 抠图结果（RGBA 图片），当 photo.source="cutout" 时使用
             
         Returns:
             Final rendered image (PIL Image, RGBA mode)
@@ -114,7 +116,7 @@ class RenderEngine:
             # 4. 渲染每个图层
             for layer in layers:
                 if layer["type"] == "photo":
-                    self._render_photo(canvas, layer["data"], raw_image)
+                    self._render_photo(canvas, layer["data"], raw_image, artifacts)
                 elif layer["type"] == "sticker":
                     self._render_sticker(canvas, layer["data"])
             
@@ -123,7 +125,7 @@ class RenderEngine:
         except Exception as e:
             raise RenderError(f"Failed to render image: {e}") from e
     
-    def _render_photo(self, canvas: Image.Image, photo: Dict[str, Any], raw_image: Image.Image) -> None:
+    def _render_photo(self, canvas: Image.Image, photo: Dict[str, Any], raw_image: Image.Image, artifacts: Optional[Dict[str, Image.Image]] = None) -> None:
         """
         渲染照片到画布。
         
@@ -132,7 +134,7 @@ class RenderEngine:
             photo: Photo configuration from runtime_spec
                 {
                     "id": "p1",
-                    "source": "raw",
+                    "source": "raw" | "cutout",
                     "x": 100,  # 像素坐标
                     "y": 200,  # 像素坐标
                     "w": 800,  # 像素尺寸
@@ -141,18 +143,28 @@ class RenderEngine:
                     "z": 0
                 }
             raw_image: The input raw image (PIL Image)
+            artifacts: 可选的艺术品字典，包含 cutout 图片
         """
         x = photo["x"]
         y = photo["y"]
         w = photo["w"]
         h = photo["h"]
         fit_mode = photo.get("fit", "cover")
+        source = photo.get("source", "raw")
+        
+        # 选择图片源
+        if source == "cutout" and artifacts and "cutout" in artifacts:
+            # 使用抠图结果
+            image_to_render = artifacts["cutout"]
+        else:
+            # 使用原始图片
+            image_to_render = raw_image
         
         # 转换 fit 模式：cover -> FILL, contain -> FIT
         crop_mode = "FILL" if fit_mode == "cover" else "FIT"
         
         # 调整照片尺寸以适应目标区域
-        placed = fit_or_fill(raw_image.convert("RGBA"), w, h, crop_mode)
+        placed = fit_or_fill(image_to_render.convert("RGBA"), w, h, crop_mode)
         
         # 合成到画布
         canvas.alpha_composite(placed, (x, y))
